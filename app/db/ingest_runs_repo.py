@@ -1,4 +1,4 @@
-import sqlite3
+import psycopg
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -18,33 +18,33 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def start_ingest_run(con: sqlite3.Connection, *, mode: str = "manual") -> int:
-    cur = con.execute(
-        "insert into ingest_runs (started_at, mode) values (?, ?)",
+def start_ingest_run(con: psycopg.Connection, *, mode: str = "manual") -> str:
+    row = con.execute(
+        "INSERT INTO ingest_runs (started_at, mode) VALUES (%s, %s) RETURNING id",
         (_now_iso(), mode),
-    )
+    ).fetchone()
     con.commit()
-    return int(cur.lastrowid)
+    return str(row["id"])
 
 
 def finish_ingest_run(
-    con: sqlite3.Connection,
-    run_id: int,
+    con: psycopg.Connection,
+    run_id: str,
     counts: IngestRunCounts,
     *,
     error: str | None = None,
 ) -> None:
     con.execute(
         """
-        update ingest_runs
-        set finished_at = ?,
-            inserted_count = ?,
-            dropped_no_date_count = ?,
-            dropped_irrelevant_count = ?,
-            dropped_out_of_window_count = ?,
-            dedup_dropped_count = ?,
-            error = ?
-        where id = ?
+        UPDATE ingest_runs
+        SET finished_at = %s,
+            inserted_count = %s,
+            dropped_no_date_count = %s,
+            dropped_irrelevant_count = %s,
+            dropped_out_of_window_count = %s,
+            dedup_dropped_count = %s,
+            error = %s
+        WHERE id = %s
         """,
         (
             _now_iso(),
@@ -61,34 +61,34 @@ def finish_ingest_run(
 
 
 def insert_ingest_section_runs(
-    con: sqlite3.Connection,
-    run_id: int,
+    con: psycopg.Connection,
+    run_id: str,
     source: str,
     section_stats: list[SectionDiscoveryStats],
 ) -> None:
     if not section_stats:
         return
-    con.executemany(
-        """
-        insert into ingest_section_runs (
-            run_id,
-            source,
-            section,
-            section_url,
-            pages_scanned,
-            discovered_raw,
-            discovered_unique,
-            processed_urls,
-            inserted_count,
-            dropped_no_date_count,
-            dropped_irrelevant_count,
-            dropped_out_of_window_count,
-            dedup_dropped_count,
-            failed_count,
-            latest_published_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
+    for item in section_stats:
+        con.execute(
+            """
+            INSERT INTO ingest_section_runs (
+                run_id,
+                source,
+                section,
+                section_url,
+                pages_scanned,
+                discovered_raw,
+                discovered_unique,
+                processed_urls,
+                inserted_count,
+                dropped_no_date_count,
+                dropped_irrelevant_count,
+                dropped_out_of_window_count,
+                dedup_dropped_count,
+                failed_count,
+                latest_published_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 run_id,
                 source,
@@ -105,8 +105,6 @@ def insert_ingest_section_runs(
                 item.dedup_dropped_count,
                 item.failed_count,
                 item.latest_published_at,
-            )
-            for item in section_stats
-        ],
-    )
+            ),
+        )
     con.commit()

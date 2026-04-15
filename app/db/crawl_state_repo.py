@@ -1,4 +1,4 @@
-import sqlite3
+import psycopg
 from datetime import UTC, datetime
 
 
@@ -7,17 +7,17 @@ def _now_iso() -> str:
 
 
 def get_crawl_state_last_published_at(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     *,
     source: str,
     section: str,
 ) -> str | None:
     row = con.execute(
         """
-        select last_published_at
-        from crawl_state
-        where source = ? and section = ?
-        limit 1
+        SELECT last_published_at
+        FROM crawl_state
+        WHERE source = %s AND section = %s
+        LIMIT 1
         """,
         (source, section),
     ).fetchone()
@@ -27,7 +27,7 @@ def get_crawl_state_last_published_at(
 
 
 def upsert_crawl_state(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     *,
     source: str,
     section: str,
@@ -37,15 +37,15 @@ def upsert_crawl_state(
 ) -> None:
     con.execute(
         """
-        insert into crawl_state (source, section, last_published_at, last_run_at, status, error)
-        values (?, ?, ?, ?, ?, ?)
-        on conflict(source, section) do update set
-            last_published_at = case
-                when excluded.last_published_at is null then crawl_state.last_published_at
-                when crawl_state.last_published_at is null then excluded.last_published_at
-                when excluded.last_published_at > crawl_state.last_published_at then excluded.last_published_at
-                else crawl_state.last_published_at
-            end,
+        INSERT INTO crawl_state (source, section, last_published_at, last_run_at, status, error)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT(source, section) DO UPDATE SET
+            last_published_at = CASE
+                WHEN excluded.last_published_at IS NULL THEN crawl_state.last_published_at
+                WHEN crawl_state.last_published_at IS NULL THEN excluded.last_published_at
+                WHEN excluded.last_published_at > crawl_state.last_published_at THEN excluded.last_published_at
+                ELSE crawl_state.last_published_at
+            END,
             last_run_at = excluded.last_run_at,
             status = excluded.status,
             error = excluded.error

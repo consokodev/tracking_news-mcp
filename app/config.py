@@ -14,17 +14,19 @@ def _env_bool(name: str, default: bool) -> bool:
     return os.getenv(name, "1" if default else "0") == "1"
 
 
-NEWS_DB_PATH = os.getenv("NEWS_DB_PATH", "./data/news.db")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql://news:news_password@localhost:5432/news_db"
+)
 
 STORE_CONTENT_HTML = _env_bool("STORE_CONTENT_HTML", True)
 STORE_RAW_HTML = _env_bool("STORE_RAW_HTML", False)
 
 USE_PLAYWRIGHT = _env_bool("USE_PLAYWRIGHT", False)
 
-INGEST_DATE_FROM = _env_iso_date("INGEST_DATE_FROM", "2026-01-01")
+INGEST_DATE_FROM = _env_iso_date("INGEST_DATE_FROM", "2026-04-12")
 INGEST_DATE_TO = _env_iso_date("INGEST_DATE_TO", date.today().isoformat())
-MAX_PAGES_PER_SECTION = _env_int("MAX_PAGES_PER_SECTION", 32)
-MAX_EXTRA_PAGES_PER_SECTION = _env_int("MAX_EXTRA_PAGES_PER_SECTION", 32)
+MAX_PAGES_PER_SECTION = _env_int("MAX_PAGES_PER_SECTION", 5)
+MAX_EXTRA_PAGES_PER_SECTION = _env_int("MAX_EXTRA_PAGES_PER_SECTION", 3)
 MIN_UNIQUE_URLS_TO_EXTEND = _env_int("MIN_UNIQUE_URLS_TO_EXTEND", 8)
 MAX_CONSECUTIVE_STALE_PAGES = _env_int("MAX_CONSECUTIVE_STALE_PAGES", 3)
 MAX_CONSECUTIVE_OUT_OF_WINDOW_LIST_PAGES = _env_int("MAX_CONSECUTIVE_OUT_OF_WINDOW_LIST_PAGES", 2)

@@ -11,7 +11,13 @@ from app.config import CRAWL_RATE_LIMIT_SECONDS, CRAWL_TIMEOUT_SECONDS, CRAWL_US
 def build_client(*, transport: httpx.BaseTransport | None = None) -> httpx.Client:
     return httpx.Client(
         follow_redirects=True,
-        headers={"User-Agent": CRAWL_USER_AGENT},
+        headers={
+            "User-Agent": CRAWL_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Cache-Control": "max-age=0",
+        },
         timeout=CRAWL_TIMEOUT_SECONDS,
         transport=transport,
     )

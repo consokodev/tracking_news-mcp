@@ -1,5 +1,5 @@
 import json
-import sqlite3
+import psycopg
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
@@ -53,7 +53,7 @@ class ArticleFilters:
 
 
 def search_articles(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     *,
     filters: ArticleFilters,
     limit: int = MAX_LIST_LIMIT,
@@ -62,7 +62,7 @@ def search_articles(
     where_clause, params, fts_join = _build_articles_where(filters)
     rows = con.execute(
         f"""
-        select
+        SELECT
             a.id,
             a.title,
             a.url,
@@ -75,11 +75,11 @@ def search_articles(
             a.fomo_score,
             a.tickers_json,
             substr(a.content_text, 1, {SNIPPET_LENGTH}) as snippet
-        from articles a
+        FROM articles a
         {fts_join}
-        where {where_clause}
-        order by {_list_order_by_clause(sort)}
-        limit ?
+        WHERE {where_clause}
+        ORDER BY {_list_order_by_clause(sort)}
+        LIMIT %s
         """,
         (*params, _clamp_limit(limit)),
     ).fetchall()
@@ -87,7 +87,7 @@ def search_articles(
 
 
 def latest_articles(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     *,
     filters: ArticleFilters,
     limit: int = MAX_LIST_LIMIT,
@@ -97,15 +97,15 @@ def latest_articles(
 
 
 def get_article_by_id(
-    con: sqlite3.Connection,
-    article_id: int,
+    con: psycopg.Connection,
+    article_id: str,
     *,
     include_content_html: bool = True,
     include_raw_html: bool = True,
 ) -> dict[str, Any] | None:
     row = con.execute(
         """
-        select
+        SELECT
             id,
             title,
             url,
@@ -121,9 +121,9 @@ def get_article_by_id(
             content_text,
             content_html,
             raw_html
-        from articles
-        where id = ?
-        limit 1
+        FROM articles
+        WHERE id = %s
+        LIMIT 1
         """,
         (article_id,),
     ).fetchone()
@@ -137,7 +137,7 @@ def get_article_by_id(
 
 
 def get_article_by_url(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     url: str,
     *,
     include_content_html: bool = True,
@@ -145,7 +145,7 @@ def get_article_by_url(
 ) -> dict[str, Any] | None:
     row = con.execute(
         """
-        select
+        SELECT
             id,
             title,
             url,
@@ -161,9 +161,9 @@ def get_article_by_url(
             content_text,
             content_html,
             raw_html
-        from articles
-        where url = ?
-        limit 1
+        FROM articles
+        WHERE url = %s
+        LIMIT 1
         """,
         (url,),
     ).fetchone()
@@ -176,19 +176,19 @@ def get_article_by_url(
     )
 
 
-def overview_stats(con: sqlite3.Connection, *, filters: ArticleFilters) -> dict[str, Any]:
+def overview_stats(con: psycopg.Connection, *, filters: ArticleFilters) -> dict[str, Any]:
     where_clause, params, fts_join = _build_articles_where(filters)
     row = con.execute(
         f"""
-        select
+        SELECT
             count(*) as total_articles,
             count(distinct a.source) as sources_count,
             count(distinct a.seed_section) as sections_count,
             count(distinct a.category) as categories_count,
             max(a.published_at) as latest_published_at
-        from articles a
+        FROM articles a
         {fts_join}
-        where {where_clause}
+        WHERE {where_clause}
         """,
         params,
     ).fetchone()
@@ -201,21 +201,21 @@ def overview_stats(con: sqlite3.Connection, *, filters: ArticleFilters) -> dict[
     }
 
 
-def timeline_stats(con: sqlite3.Connection, *, filters: ArticleFilters) -> list[dict[str, Any]]:
+def timeline_stats(con: psycopg.Connection, *, filters: ArticleFilters) -> list[dict[str, Any]]:
     where_clause, params, fts_join = _build_articles_where(filters)
     rows = con.execute(
         f"""
-        select
+        SELECT
             a.published_date,
             count(*) as article_count,
-            round(avg(a.fomo_score), 4) as avg_fomo,
+            round(avg(a.fomo_score)::numeric, 4) as avg_fomo,
             sum(case when a.fomo_score > 0 then 1 else 0 end) as positive_count,
             sum(case when a.fomo_score < 0 then 1 else 0 end) as negative_count
-        from articles a
+        FROM articles a
         {fts_join}
-        where {where_clause}
-        group by a.published_date
-        order by a.published_date asc
+        WHERE {where_clause}
+        GROUP BY a.published_date
+        ORDER BY a.published_date ASC
         """,
         params,
     ).fetchall()
@@ -232,7 +232,7 @@ def timeline_stats(con: sqlite3.Connection, *, filters: ArticleFilters) -> list[
 
 
 def top_tickers(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     *,
     filters: ArticleFilters,
     limit: int = 20,
@@ -244,7 +244,7 @@ def top_tickers(
 
 
 def slice_stats(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     *,
     filters: ArticleFilters,
     group_by: str,
@@ -257,20 +257,20 @@ def slice_stats(
     expression, value_clause = _sql_group_expression(group_by)
     where_clause, params, fts_join = _build_articles_where(filters)
     if value_clause:
-        where_clause = f"{where_clause} and {value_clause}"
+        where_clause = f"{where_clause} AND {value_clause}"
     rows = con.execute(
         f"""
-        select
+        SELECT
             {expression} as grouping_key,
             count(*) as article_count,
-            round(avg(a.fomo_score), 4) as avg_fomo,
+            round(avg(a.fomo_score)::numeric, 4) as avg_fomo,
             max(a.published_at) as latest_published_at,
             sum(case when a.fomo_score > 0 then 1 else 0 end) as positive_count,
             sum(case when a.fomo_score < 0 then 1 else 0 end) as negative_count
-        from articles a
+        FROM articles a
         {fts_join}
-        where {where_clause}
-        group by grouping_key
+        WHERE {where_clause}
+        GROUP BY grouping_key
         """,
         params,
     ).fetchall()
@@ -289,7 +289,7 @@ def slice_stats(
 
 
 def facet_counts(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     *,
     filters: ArticleFilters,
     fields: tuple[str, ...],
@@ -310,16 +310,16 @@ def facet_counts(
         expression, value_clause = _sql_facet_expression(field)
         where_clause, params, fts_join = _build_articles_where(filters)
         if value_clause:
-            where_clause = f"{where_clause} and {value_clause}"
+            where_clause = f"{where_clause} AND {value_clause}"
         rows = con.execute(
             f"""
-            select
+            SELECT
                 {expression} as facet_value,
                 count(*) as article_count
-            from articles a
+            FROM articles a
             {fts_join}
-            where {where_clause}
-            group by facet_value
+            WHERE {where_clause}
+            GROUP BY facet_value
             """,
             params,
         ).fetchall()
@@ -333,10 +333,10 @@ def facet_counts(
     return results
 
 
-def latest_ingest_run(con: sqlite3.Connection) -> dict[str, Any] | None:
+def latest_ingest_run(con: psycopg.Connection) -> dict[str, Any] | None:
     row = con.execute(
         """
-        select
+        SELECT
             id,
             started_at,
             finished_at,
@@ -347,20 +347,22 @@ def latest_ingest_run(con: sqlite3.Connection) -> dict[str, Any] | None:
             dropped_out_of_window_count,
             dedup_dropped_count,
             error
-        from ingest_runs
-        order by id desc
-        limit 1
+        FROM ingest_runs
+        ORDER BY created_at DESC
+        LIMIT 1
         """
     ).fetchone()
     if row is None:
         return None
-    return dict(row)
+    result = dict(row)
+    result["id"] = str(result["id"])
+    return result
 
 
-def crawl_status(con: sqlite3.Connection) -> dict[str, Any]:
+def crawl_status(con: psycopg.Connection) -> dict[str, Any]:
     state_rows = con.execute(
         """
-        select
+        SELECT
             cs.source,
             cs.section,
             cs.last_published_at,
@@ -368,12 +370,12 @@ def crawl_status(con: sqlite3.Connection) -> dict[str, Any]:
             cs.status,
             cs.error,
             (
-                select max(a.published_at)
-                from articles a
-                where a.source = cs.source and a.seed_section = cs.section
+                SELECT max(a.published_at)
+                FROM articles a
+                WHERE a.source = cs.source AND a.seed_section = cs.section
             ) as article_max_published_at
-        from crawl_state cs
-        order by cs.source asc, cs.section asc
+        FROM crawl_state cs
+        ORDER BY cs.source ASC, cs.section ASC
         """
     ).fetchall()
     return {
@@ -383,16 +385,16 @@ def crawl_status(con: sqlite3.Connection) -> dict[str, Any]:
 
 
 def get_section_max_published_at(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     *,
     source: str,
     section: str,
 ) -> str | None:
     row = con.execute(
         """
-        select max(published_at) as max_published_at
-        from articles
-        where source = ? and seed_section = ?
+        SELECT max(published_at) as max_published_at
+        FROM articles
+        WHERE source = %s AND seed_section = %s
         """,
         (source, section),
     ).fetchone()
@@ -403,46 +405,45 @@ def get_section_max_published_at(
 
 def _build_articles_where(filters: ArticleFilters) -> tuple[str, list[Any], str]:
     clauses = [
-        "a.published_date between ? and ?",
-        "a.fomo_score >= ?",
+        "a.published_date BETWEEN %s AND %s",
+        "a.fomo_score >= %s",
     ]
     params: list[Any] = [filters.date_from, filters.date_to, float(filters.min_fomo)]
     fts_join = ""
 
     if filters.sources:
-        placeholders = ", ".join("?" for _ in filters.sources)
-        clauses.append(f"a.source in ({placeholders})")
+        placeholders = ", ".join("%s" for _ in filters.sources)
+        clauses.append(f"a.source IN ({placeholders})")
         params.extend(filters.sources)
 
     if filters.categories:
-        placeholders = ", ".join("?" for _ in filters.categories)
-        clauses.append(f"a.category in ({placeholders})")
+        placeholders = ", ".join("%s" for _ in filters.categories)
+        clauses.append(f"a.category IN ({placeholders})")
         params.extend(filters.categories)
 
     if filters.sections:
-        placeholders = ", ".join("?" for _ in filters.sections)
-        clauses.append(f"a.seed_section in ({placeholders})")
+        placeholders = ", ".join("%s" for _ in filters.sections)
+        clauses.append(f"a.seed_section IN ({placeholders})")
         params.extend(filters.sections)
 
     if filters.tickers:
-        placeholders = ", ".join("?" for _ in filters.tickers)
+        placeholders = ", ".join("%s" for _ in filters.tickers)
         clauses.append(
-            f"exists (select 1 from json_each(a.tickers_json) where upper(json_each.value) in ({placeholders}))"
+            f"EXISTS (SELECT 1 FROM jsonb_array_elements_text(a.tickers_json::jsonb) AS t WHERE upper(t) IN ({placeholders}))"
         )
         params.extend(ticker.upper() for ticker in filters.tickers)
 
     keyword = (filters.keyword or "").strip()
     if keyword:
-        fts_join = "join articles_fts on articles_fts.rowid = a.id"
-        clauses.append("articles_fts match ?")
+        clauses.append("a.search_vector @@ plainto_tsquery('simple', unaccent(%s))")
         params.append(keyword)
 
-    return " and ".join(clauses), params, fts_join
+    return " AND ".join(clauses), params, fts_join
 
 
-def _article_list_item(row: sqlite3.Row) -> dict[str, Any]:
+def _article_list_item(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": int(row["id"]),
+        "id": str(row["id"]),
         "title": row["title"],
         "url": row["url"],
         "source": row["source"],
@@ -458,14 +459,14 @@ def _article_list_item(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _article_detail_item(
-    row: sqlite3.Row,
+    row: dict[str, Any],
     *,
     include_content_html: bool,
     include_raw_html: bool,
 ) -> dict[str, Any]:
     explain_raw = row["fomo_explain_json"]
     item = {
-        "id": int(row["id"]),
+        "id": str(row["id"]),
         "title": row["title"],
         "url": row["url"],
         "source": row["source"],
@@ -534,25 +535,25 @@ def _clamp_top_limit(limit: int) -> int:
 
 def _list_order_by_clause(sort: str) -> str:
     if sort == "published_at_desc":
-        return "a.published_at desc, a.id desc"
+        return "a.published_at DESC, a.created_at DESC"
     if sort == "published_at_asc":
-        return "a.published_at asc, a.id asc"
+        return "a.published_at ASC, a.created_at ASC"
     if sort == "fomo_desc":
-        return "a.fomo_score desc, a.published_at desc, a.id desc"
+        return "a.fomo_score DESC, a.published_at DESC, a.created_at DESC"
     if sort == "fomo_asc":
-        return "a.fomo_score asc, a.published_at desc, a.id desc"
+        return "a.fomo_score ASC, a.published_at DESC, a.created_at DESC"
     raise ValueError(f"Unsupported list sort: {sort}")
 
 
 def _sql_group_expression(group_by: str) -> tuple[str, str | None]:
     if group_by == "source":
-        return "a.source", "a.source is not null and trim(a.source) <> ''"
+        return "a.source", "a.source IS NOT NULL AND trim(a.source) <> ''"
     if group_by == "category":
-        return "a.category", "a.category is not null and trim(a.category) <> ''"
+        return "a.category", "a.category IS NOT NULL AND trim(a.category) <> ''"
     if group_by == "section":
-        return "a.seed_section", "a.seed_section is not null and trim(a.seed_section) <> ''"
+        return "a.seed_section", "a.seed_section IS NOT NULL AND trim(a.seed_section) <> ''"
     if group_by == "topic":
-        return "a.topic_label", "a.topic_label is not null and trim(a.topic_label) <> ''"
+        return "a.topic_label", "a.topic_label IS NOT NULL AND trim(a.topic_label) <> ''"
     if group_by == "published_date":
         return "a.published_date", None
     raise ValueError(f"Unsupported slice group_by: {group_by}")
@@ -560,35 +561,36 @@ def _sql_group_expression(group_by: str) -> tuple[str, str | None]:
 
 def _sql_facet_expression(field: str) -> tuple[str, str | None]:
     if field == "sources":
-        return "a.source", "a.source is not null and trim(a.source) <> ''"
+        return "a.source", "a.source IS NOT NULL AND trim(a.source) <> ''"
     if field == "categories":
-        return "a.category", "a.category is not null and trim(a.category) <> ''"
+        return "a.category", "a.category IS NOT NULL AND trim(a.category) <> ''"
     if field == "sections":
-        return "a.seed_section", "a.seed_section is not null and trim(a.seed_section) <> ''"
+        return "a.seed_section", "a.seed_section IS NOT NULL AND trim(a.seed_section) <> ''"
     if field == "topics":
-        return "a.topic_label", "a.topic_label is not null and trim(a.topic_label) <> ''"
+        return "a.topic_label", "a.topic_label IS NOT NULL AND trim(a.topic_label) <> ''"
     raise ValueError(f"Unsupported facet field: {field}")
 
 
 def _slice_stats_by_ticker(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     *,
     filters: ArticleFilters,
     sort: str,
     limit: int,
 ) -> list[dict[str, Any]]:
+    where_clause, params, fts_join = _build_articles_where(filters)
     rows = con.execute(
         f"""
-        select
+        SELECT
             a.id,
             a.published_at,
             a.fomo_score,
             a.tickers_json
-        from articles a
-        {_build_articles_where(filters)[2]}
-        where {_build_articles_where(filters)[0]}
+        FROM articles a
+        {fts_join}
+        WHERE {where_clause}
         """,
-        _build_articles_where(filters)[1],
+        params,
     ).fetchall()
 
     buckets: dict[str, dict[str, Any]] = {}
@@ -662,14 +664,14 @@ def _sort_slice_items(items: list[dict[str, Any]], *, sort: str) -> list[dict[st
     raise ValueError(f"Unsupported slice sort: {sort}")
 
 
-def _ticker_counter(con: sqlite3.Connection, *, filters: ArticleFilters) -> Counter[str]:
+def _ticker_counter(con: psycopg.Connection, *, filters: ArticleFilters) -> Counter[str]:
     where_clause, params, fts_join = _build_articles_where(filters)
     rows = con.execute(
         f"""
-        select a.tickers_json
-        from articles a
+        SELECT a.tickers_json
+        FROM articles a
         {fts_join}
-        where {where_clause}
+        WHERE {where_clause}
         """,
         params,
     ).fetchall()

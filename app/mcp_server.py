@@ -147,7 +147,7 @@ def list_tools() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "integer"},
+                    "id": {"type": "string"},
                     "url": {"type": "string"},
                     "include_content_html": {"type": "boolean"},
                     "include_raw_html": {"type": "boolean"},
@@ -260,7 +260,7 @@ def handle_call_tool(name: str, arguments: dict | None) -> dict[str, Any]:
             article = (
                 get_article_by_id(
                     con,
-                    int(article_id),
+                    str(article_id),
                     include_content_html=include_content_html,
                     include_raw_html=include_raw_html,
                 )

@@ -1,6 +1,7 @@
 import json
-import sqlite3
 from dataclasses import dataclass
+
+import psycopg
 
 from app.dedup.service import find_duplicate
 
@@ -30,15 +31,15 @@ class ArticleRecord:
 class InsertResult:
     inserted: bool
     reason: str | None = None
-    article_id: int | None = None
+    article_id: str | None = None
 
 
-def insert_article(con: sqlite3.Connection, article: ArticleRecord) -> InsertResult:
-    url_row = con.execute(
-        "select id from articles where url = ? limit 1", (article.url,)
+def insert_article(con: psycopg.Connection, article: ArticleRecord) -> InsertResult:
+    row = con.execute(
+        "SELECT id FROM articles WHERE url = %s LIMIT 1", (article.url,)
     ).fetchone()
-    if url_row:
-        return InsertResult(False, "duplicate_url", int(url_row["id"]))
+    if row:
+        return InsertResult(False, "duplicate_url", str(row["id"]))
 
     dedup = find_duplicate(
         con,
@@ -50,9 +51,9 @@ def insert_article(con: sqlite3.Connection, article: ArticleRecord) -> InsertRes
     if dedup.is_duplicate:
         return InsertResult(False, dedup.reason, dedup.canonical_id)
 
-    cur = con.execute(
+    row = con.execute(
         """
-        insert into articles (
+        INSERT INTO articles (
             title,
             url,
             source,
@@ -71,7 +72,8 @@ def insert_article(con: sqlite3.Connection, article: ArticleRecord) -> InsertRes
             simhash64,
             simhash_bucket
         )
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
         """,
         (
             article.title,
@@ -92,6 +94,6 @@ def insert_article(con: sqlite3.Connection, article: ArticleRecord) -> InsertRes
             article.simhash64,
             article.simhash_bucket,
         ),
-    )
+    ).fetchone()
     con.commit()
-    return InsertResult(True, article_id=int(cur.lastrowid))
+    return InsertResult(True, article_id=str(row["id"]))

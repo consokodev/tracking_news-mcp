@@ -1,5 +1,5 @@
 import os
-import sqlite3
+import psycopg
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -25,7 +25,7 @@ class SourcePlan:
     sections: tuple[SectionPlan, ...]
 
 
-def build_source_plan(con: sqlite3.Connection, adapter: SourceAdapter) -> SourcePlan:
+def build_source_plan(con: psycopg.Connection, adapter: SourceAdapter) -> SourcePlan:
     return SourcePlan(
         source=adapter.source_name,
         sections=tuple(
@@ -35,7 +35,7 @@ def build_source_plan(con: sqlite3.Connection, adapter: SourceAdapter) -> Source
 
 
 def build_section_plan(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     source_name: str,
     section: SectionSeed,
     *,
@@ -63,7 +63,7 @@ def build_section_plan(
 
 
 def _resolve_resume_boundary(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     *,
     source_name: str,
     section_name: str,
@@ -78,9 +78,9 @@ def _resolve_resume_boundary(
 
     row = con.execute(
         """
-        select max(published_at) as max_published_at
-        from articles
-        where source = ? and seed_section = ?
+        SELECT max(published_at) as max_published_at
+        FROM articles
+        WHERE source = %s AND seed_section = %s
         """,
         (source_name, section_name),
     ).fetchone()

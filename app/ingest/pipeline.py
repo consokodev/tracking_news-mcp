@@ -1,5 +1,5 @@
 import logging
-import sqlite3
+import psycopg
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import NamedTuple
@@ -20,6 +20,7 @@ from app.config import (
 )
 from app.db.articles_repo import ArticleRecord, insert_article
 from app.db.crawl_state_repo import upsert_crawl_state
+from app.db.drop_log_repo import log_drop
 from app.db.ingest_runs_repo import IngestRunCounts
 from app.dedup.hashers import compute_content_sha256, compute_simhash64, compute_simhash_bucket
 from app.extract.datetime_utils import (
@@ -90,6 +91,7 @@ class RunOncePipeline:
         article_fetch_workers: int | None = None,
         article_rate_limit_seconds: float | None = None,
         section_plans: tuple[SectionPlan, ...] | None = None,
+        run_id: str | None = None,
     ):
         self.adapter = adapter
         self.client = client
@@ -98,8 +100,9 @@ class RunOncePipeline:
         self.section_plans = {
             plan.section: plan for plan in (section_plans or self._default_section_plans())
         }
+        self.run_id = run_id
 
-    def run(self, con: sqlite3.Connection) -> PipelineResult:
+    def run(self, con: psycopg.Connection) -> PipelineResult:
         discovered_articles, section_stats = self._discover_article_urls(con)
         counts = IngestRunCounts()
         failed_urls: list[str] = []
@@ -133,6 +136,7 @@ class RunOncePipeline:
                 ):
                     counts.dropped_out_of_window_count += 1
                     section_stats_item.dropped_out_of_window_count += 1
+                    self._log_drop(con, url, discovered, "out_of_window", f"published_date={published_date}")
                     continue
 
                 if (
@@ -144,6 +148,7 @@ class RunOncePipeline:
                 content_text = normalize_text(candidate.content_text)
                 if not content_text:
                     logger.warning("dropping article without content_text: %s", url)
+                    self._log_drop(con, url, discovered, "no_content")
                     continue
 
                 tickers = extract_vn30_tickers(f"{candidate.title}\n{content_text}")
@@ -178,20 +183,27 @@ class RunOncePipeline:
                 elif insert_result.reason in {"exact_sha256", "near_simhash", "duplicate_url"}:
                     counts.dedup_dropped_count += 1
                     section_stats_item.dedup_dropped_count += 1
+                    self._log_drop(
+                        con, url, discovered, insert_result.reason,
+                        f"canonical_id={insert_result.article_id}",
+                    )
             except MissingPublishedAtError:
                 counts.dropped_no_date_count += 1
                 section_stats_item.dropped_no_date_count += 1
                 logger.warning("dropping article without published_at: %s", url)
-            except SkipArticleError:
+                self._log_drop(con, url, discovered, "no_date")
+            except SkipArticleError as exc:
                 counts.dropped_irrelevant_count += 1
                 section_stats_item.dropped_irrelevant_count += 1
                 logger.warning("dropping irrelevant article: %s", url)
-            except Exception:
+                self._log_drop(con, url, discovered, "irrelevant", str(exc))
+            except Exception as exc:
                 failed_urls.append(url)
                 section_stats_item.failed_count += 1
                 logger.exception(
                     "failed to ingest article: source=%s url=%s", self.adapter.source_name, url
                 )
+                self._log_drop(con, url, discovered, "fetch_failed", str(exc)[:500])
 
         for section_stats_item in section_stats:
             upsert_crawl_state(
@@ -210,6 +222,29 @@ class RunOncePipeline:
             failed_urls=failed_urls,
             section_stats=section_stats,
         )
+
+    def _log_drop(
+        self,
+        con: psycopg.Connection,
+        url: str,
+        discovered: DiscoveredArticle,
+        drop_reason: str,
+        detail: str | None = None,
+    ) -> None:
+        if self.run_id is None:
+            return
+        try:
+            log_drop(
+                con,
+                run_id=self.run_id,
+                url=url,
+                source=self.adapter.source_name,
+                section=discovered.seed_section,
+                drop_reason=drop_reason,
+                detail=detail,
+            )
+        except Exception:
+            logger.debug("failed to log drop for %s", url, exc_info=True)
 
     def _default_section_plans(self) -> tuple[SectionPlan, ...]:
         return tuple(
@@ -249,7 +284,7 @@ class RunOncePipeline:
             return PreparedArticle(discovered=discovered, candidate=None, exception=exc)
 
     def _discover_article_urls(
-        self, con: sqlite3.Connection
+        self, con: psycopg.Connection
     ) -> tuple[list[DiscoveredArticle], list[SectionDiscoveryStats]]:
         discovered_articles: list[DiscoveredArticle] = []
         seen: set[str] = set()
@@ -363,7 +398,7 @@ class RunOncePipeline:
 
         return oldest_published_date is not None and oldest_published_date < section_plan.date_from
 
-    def _mark_section_running(self, con: sqlite3.Connection, section: SectionSeed) -> None:
+    def _mark_section_running(self, con: psycopg.Connection, section: SectionSeed) -> None:
         upsert_crawl_state(
             con,
             source=self.adapter.source_name,
@@ -382,14 +417,16 @@ class CafeFRebuildPipeline:
         page_cap: int | None = None,
         old_page_streak: int | None = None,
         article_rate_limit_seconds: float | None = None,
+        run_id: str | None = None,
     ):
         self.adapter = adapter or CafeFAdapter()
         self.client = client
         self.page_cap = max(1, page_cap or CAFEF_REBUILD_PAGE_CAP)
         self.old_page_streak = max(1, old_page_streak or CAFEF_REBUILD_OLD_PAGE_STREAK)
         self.article_rate_limit_seconds = article_rate_limit_seconds
+        self.run_id = run_id
 
-    def run(self, con: sqlite3.Connection) -> PipelineResult:
+    def run(self, con: psycopg.Connection) -> PipelineResult:
         counts = IngestRunCounts()
         failed_urls: list[str] = []
         section_stats: list[SectionDiscoveryStats] = []
@@ -430,6 +467,10 @@ class CafeFRebuildPipeline:
                         stats.unique_urls += 1
                         page_had_new_unique_urls = True
 
+                        discovered = DiscoveredArticle(
+                            url=url, seed_section=section.name, topic_label=topic_label,
+                        )
+
                         try:
                             article_html = fetch_html(
                                 url,
@@ -448,10 +489,12 @@ class CafeFRebuildPipeline:
                                 page_old_published_dates += 1
                                 counts.dropped_out_of_window_count += 1
                                 stats.dropped_out_of_window_count += 1
+                                self._log_drop(con, url, discovered, "out_of_window", f"published_date={published_date} < {INGEST_DATE_FROM}")
                                 continue
                             if published_date > INGEST_DATE_TO:
                                 counts.dropped_out_of_window_count += 1
                                 stats.dropped_out_of_window_count += 1
+                                self._log_drop(con, url, discovered, "out_of_window", f"published_date={published_date} > {INGEST_DATE_TO}")
                                 continue
 
                             if (
@@ -463,6 +506,7 @@ class CafeFRebuildPipeline:
                             content_text = normalize_text(candidate.content_text)
                             if not content_text:
                                 logger.warning("dropping article without content_text: %s", url)
+                                self._log_drop(con, url, discovered, "no_content")
                                 continue
 
                             tickers = extract_vn30_tickers(f"{candidate.title}\n{content_text}")
@@ -503,18 +547,25 @@ class CafeFRebuildPipeline:
                             }:
                                 counts.dedup_dropped_count += 1
                                 stats.dedup_dropped_count += 1
+                                self._log_drop(
+                                    con, url, discovered, insert_result.reason,
+                                    f"canonical_id={insert_result.article_id}",
+                                )
                         except MissingPublishedAtError:
                             counts.dropped_no_date_count += 1
                             stats.dropped_no_date_count += 1
                             logger.warning("dropping article without published_at: %s", url)
-                        except SkipArticleError:
+                            self._log_drop(con, url, discovered, "no_date")
+                        except SkipArticleError as exc:
                             counts.dropped_irrelevant_count += 1
                             stats.dropped_irrelevant_count += 1
                             logger.warning("dropping irrelevant article: %s", url)
-                        except Exception:
+                            self._log_drop(con, url, discovered, "irrelevant", str(exc))
+                        except Exception as exc:
                             failed_urls.append(url)
                             stats.failed_count += 1
                             logger.exception("failed to ingest CafeF article: url=%s", url)
+                            self._log_drop(con, url, discovered, "fetch_failed", str(exc)[:500])
 
                     if not page_had_new_unique_urls:
                         break
@@ -557,12 +608,35 @@ class CafeFRebuildPipeline:
             section_stats=section_stats,
         )
 
+    def _log_drop(
+        self,
+        con: psycopg.Connection,
+        url: str,
+        discovered: DiscoveredArticle,
+        drop_reason: str,
+        detail: str | None = None,
+    ) -> None:
+        if self.run_id is None:
+            return
+        try:
+            log_drop(
+                con,
+                run_id=self.run_id,
+                url=url,
+                source=self.adapter.source_name,
+                section=discovered.seed_section,
+                drop_reason=drop_reason,
+                detail=detail,
+            )
+        except Exception:
+            logger.debug("failed to log drop for %s", url, exc_info=True)
+
     def _page_url(self, section: SectionSeed, page_number: int) -> str:
         if page_number == 1:
             return section.url
         return self.adapter.timelinelist_url(section=section, page_number=page_number)
 
-    def _mark_section_running(self, con: sqlite3.Connection, section: SectionSeed) -> None:
+    def _mark_section_running(self, con: psycopg.Connection, section: SectionSeed) -> None:
         upsert_crawl_state(
             con,
             source=self.adapter.source_name,

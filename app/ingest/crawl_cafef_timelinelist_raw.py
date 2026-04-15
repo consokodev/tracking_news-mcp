@@ -1,8 +1,8 @@
 import os
-import sqlite3
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
+import psycopg
 from bs4 import BeautifulSoup
 
 from app.db.conn import connect
@@ -93,42 +93,47 @@ def _extract_rows(html: str, *, page_url: str, zone_id: str, page_number: int) -
     return rows
 
 
-def _insert_rows(con: sqlite3.Connection, rows: list[tuple]) -> int:
+def _insert_rows(con: psycopg.Connection, rows: list[tuple]) -> int:
     if not rows:
         return 0
-    before = con.total_changes
-    con.executemany(
-        """
-        insert or ignore into cafef_timelinelist_raw (
-          zone_id,
-          page_number,
-          page_url,
-          item_rank,
-          article_id,
-          article_url,
-          title,
-          published_at_raw,
-          summary_text,
-          image_url,
-          raw_item_html
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows,
-    )
+    inserted = 0
+    for row in rows:
+        try:
+            con.execute(
+                """
+                INSERT INTO cafef_timelinelist_raw (
+                  zone_id,
+                  page_number,
+                  page_url,
+                  item_rank,
+                  article_id,
+                  article_url,
+                  title,
+                  published_at_raw,
+                  summary_text,
+                  image_url,
+                  raw_item_html
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (zone_id, page_number, item_rank, article_url) DO NOTHING
+                """,
+                row,
+            )
+            inserted += 1
+        except psycopg.errors.UniqueViolation:
+            con.rollback()
     con.commit()
-    return con.total_changes - before
+    return inserted
 
 
 def main() -> None:
-    db_path = os.getenv("NEWS_DB_PATH", "./data/news.db")
     targets = _parse_zone_targets(os.getenv("CAFEF_TIMELINELIST_TARGETS", "18839:1-10"))
-    init_db(db_path)
+    init_db()
 
     total_pages = 0
     total_rows = 0
     total_inserted = 0
 
-    with connect(db_path) as con, build_client() as client:
+    with connect() as con, build_client() as client:
         for target in targets:
             zone_pages = 0
             zone_rows = 0
@@ -168,7 +173,6 @@ def main() -> None:
         f"pages={total_pages}",
         f"items={total_rows}",
         f"inserted={total_inserted}",
-        f"db_path={db_path}",
     )
 
 

@@ -1,12 +1,10 @@
 import os
-import sqlite3
-from pathlib import Path
 
 from app.config import (
     CAFEF_ONLY_ARTICLE_RATE_LIMIT_SECONDS,
+    DATABASE_URL,
     INGEST_DATE_FROM,
     INGEST_DATE_TO,
-    NEWS_DB_PATH,
 )
 from app.db.conn import connect
 from app.db.ingest_runs_repo import (
@@ -20,29 +18,27 @@ from app.extract.http_client import build_client
 from app.ingest.pipeline import CafeFRebuildPipeline
 
 RESET_TABLES = (
-    "articles",
-    "crawl_state",
+    "drop_log",
     "ingest_section_runs",
     "ingest_runs",
+    "articles",
+    "crawl_state",
     "cafef_timelinelist_raw",
 )
 
 
-def reset_db_in_place(db_path: str) -> None:
-    with sqlite3.connect(db_path) as con:
-        con.execute("pragma foreign_keys=off")
+def reset_db_in_place() -> None:
+    with connect() as con:
         for table_name in RESET_TABLES:
-            con.execute(f"delete from {table_name}")
+            con.execute(f"DELETE FROM {table_name}")
         con.commit()
-        con.execute("vacuum")
-        con.execute("pragma foreign_keys=on")
 
 
-def _print_rebuild_summary(db_path: str) -> None:
-    with connect(db_path) as con:
+def _print_rebuild_summary() -> None:
+    with connect() as con:
         rows = con.execute(
             """
-            select
+            SELECT
               section,
               pages_scanned,
               processed_urls,
@@ -53,10 +49,10 @@ def _print_rebuild_summary(db_path: str) -> None:
               dedup_dropped_count,
               failed_count,
               latest_published_at
-            from ingest_section_runs
-            where source = 'cafef'
-            order by id desc
-            limit 8
+            FROM ingest_section_runs
+            WHERE source = 'cafef'
+            ORDER BY created_at DESC
+            LIMIT 8
             """
         ).fetchall()
         print(
@@ -80,24 +76,22 @@ def _print_rebuild_summary(db_path: str) -> None:
 
 
 def main() -> None:
-    db_path = Path(NEWS_DB_PATH)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
     os.environ["CAFEF_ONLY_MODE"] = "1"
     os.environ["STORE_RAW_HTML"] = "0"
     os.environ["STORE_CONTENT_HTML"] = "0"
 
-    init_db(str(db_path))
-    reset_db_in_place(str(db_path))
-    init_db(str(db_path))
+    init_db()
+    reset_db_in_place()
+    init_db()
 
     counts = IngestRunCounts()
-    with connect(str(db_path)) as con, build_client() as client:
+    with connect() as con, build_client() as client:
         run_id = start_ingest_run(con, mode="rebuild_cafef")
         try:
             result = CafeFRebuildPipeline(
                 client=client,
                 article_rate_limit_seconds=CAFEF_ONLY_ARTICLE_RATE_LIMIT_SECONDS,
+                run_id=run_id,
             ).run(con)
             counts = result.counts
             insert_ingest_section_runs(con, run_id, "cafef", result.section_stats)
@@ -106,7 +100,7 @@ def main() -> None:
             finish_ingest_run(con, run_id, counts, error=str(exc))
             raise
 
-    _print_rebuild_summary(str(db_path))
+    _print_rebuild_summary()
 
 
 if __name__ == "__main__":

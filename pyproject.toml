@@ -2,9 +2,10 @@
 [project]
 name = "vn-news-mcp"
 version = "0.1.0"
-description = "Vietnam news crawler to SQLite + MCP server + dashboard"
+description = "Vietnam news crawler to PostgreSQL + MCP server + dashboard"
 requires-python = ">=3.11"
 dependencies = [
+  "psycopg[binary]>=3.1.0",
   "httpx>=0.27.0",
   "tenacity>=8.2.3",
   "beautifulsoup4>=4.12.0",

@@ -1,0 +1,6 @@
+[server]
+headless = true
+
+[runner]
+# Ensure project root is on sys.path so `from app.xxx import` works
+# Run with: streamlit run apps/dashboard_streamlit.py

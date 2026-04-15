@@ -17,7 +17,6 @@ from app.db.query_service import (
     top_tickers,
 )
 
-DB_PATH = os.getenv("NEWS_DB_PATH", "./data/news.db")
 DEFAULT_DATE_FROM = date.fromisoformat(os.getenv("INGEST_DATE_FROM", "2025-01-01"))
 DEFAULT_DATE_TO = date.fromisoformat(os.getenv("INGEST_DATE_TO", date.today().isoformat()))
 TABLE_LIMIT = min(MAX_LIST_LIMIT, 200)
@@ -28,15 +27,15 @@ st.title("VN News Dashboard")
 
 @st.cache_data(ttl=30)
 def load_filter_options(date_from: str, date_to: str) -> dict[str, list[str]]:
-    with connect(DB_PATH) as con:
+    with connect() as con:
         sources = [
             row["source"]
             for row in con.execute(
                 """
-                select distinct source
-                from articles
-                where published_date between ? and ?
-                order by source
+                SELECT DISTINCT source
+                FROM articles
+                WHERE published_date BETWEEN %s AND %s
+                ORDER BY source
                 """,
                 (date_from, date_to),
             ).fetchall()
@@ -45,11 +44,11 @@ def load_filter_options(date_from: str, date_to: str) -> dict[str, list[str]]:
             row["seed_section"]
             for row in con.execute(
                 """
-                select distinct seed_section
-                from articles
-                where published_date between ? and ?
-                  and seed_section is not null and trim(seed_section) <> ''
-                order by seed_section
+                SELECT DISTINCT seed_section
+                FROM articles
+                WHERE published_date BETWEEN %s AND %s
+                  AND seed_section IS NOT NULL AND trim(seed_section) <> ''
+                ORDER BY seed_section
                 """,
                 (date_from, date_to),
             ).fetchall()
@@ -58,11 +57,11 @@ def load_filter_options(date_from: str, date_to: str) -> dict[str, list[str]]:
             row["category"]
             for row in con.execute(
                 """
-                select distinct category
-                from articles
-                where published_date between ? and ?
-                  and category is not null and trim(category) <> ''
-                order by category
+                SELECT DISTINCT category
+                FROM articles
+                WHERE published_date BETWEEN %s AND %s
+                  AND category IS NOT NULL AND trim(category) <> ''
+                ORDER BY category
                 """,
                 (date_from, date_to),
             ).fetchall()
@@ -76,37 +75,37 @@ def load_filter_options(date_from: str, date_to: str) -> dict[str, list[str]]:
 
 @st.cache_data(ttl=30)
 def load_overview(filters: ArticleFilters) -> dict:
-    with connect(DB_PATH) as con:
+    with connect() as con:
         return overview_stats(con, filters=filters)
 
 
 @st.cache_data(ttl=30)
 def load_timeline(filters: ArticleFilters) -> list[dict]:
-    with connect(DB_PATH) as con:
+    with connect() as con:
         return timeline_stats(con, filters=filters)
 
 
 @st.cache_data(ttl=30)
 def load_articles(filters: ArticleFilters, limit: int) -> list[dict]:
-    with connect(DB_PATH) as con:
+    with connect() as con:
         return search_articles(con, filters=filters, limit=limit)
 
 
 @st.cache_data(ttl=30)
 def load_top_tickers(filters: ArticleFilters, limit: int) -> list[dict]:
-    with connect(DB_PATH) as con:
+    with connect() as con:
         return top_tickers(con, filters=filters, limit=limit)
 
 
 @st.cache_data(ttl=30)
 def load_latest_run() -> dict | None:
-    with connect(DB_PATH) as con:
+    with connect() as con:
         return latest_ingest_run(con)
 
 
 @st.cache_data(ttl=30)
-def load_article_detail(article_id: int) -> dict | None:
-    with connect(DB_PATH) as con:
+def load_article_detail(article_id: str) -> dict | None:
+    with connect() as con:
         return get_article_by_id(con, article_id)
 
 
@@ -212,7 +211,7 @@ selected_article_id = (
 )
 
 if selected_article_id is not None:
-    detail = load_article_detail(int(selected_article_id))
+    detail = load_article_detail(str(selected_article_id))
     if detail is not None:
         st.markdown(f"### {detail['title']}")
         meta1, meta2, meta3 = st.columns(3)

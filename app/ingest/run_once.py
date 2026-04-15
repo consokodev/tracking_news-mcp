@@ -122,6 +122,7 @@ def main() -> None:
                             adapter.source_name
                         ),
                         section_plans=source_plan.sections,
+                        run_id=run_id,
                     ).run(con)
                 except Exception as exc:
                     logging.exception("source failed and will be skipped: %s", adapter.source_name)
